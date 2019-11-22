@@ -7,6 +7,9 @@ from glob import glob
 from sklearn import preprocessing
 from scipy.optimize import curve_fit
 from bayes_opt import BayesianOptimization
+from scipy.signal import butter, lfilter, freqz
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import normalize
 
 
 def read_yaml_file(path):
@@ -106,3 +109,51 @@ def optimize_param_sin_curve(df, pbounds={'a': (0.1, 1.0), 'T': (100, 200)}):
                         x_scaled.ravel(),
                         p0=[params['a'], params['T']]) # initial point
     return p
+
+
+def butter_lowpass(cutoff, fs, order=5):
+    """
+    Create low pass filter coefficient
+
+    Reference: https://stackoverflow.com/questions/25191620/creating-lowpass-filter-in-scipy-understanding-methods-and-units
+    """
+    nyq = 0.5 * fs
+    normal_cutoff = cutoff / nyq
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    return b, a
+
+
+def butter_lowpass_filter(data, cutoff, fs=30, order=5):
+    """
+    Filter data using Butterworth filter
+    """
+    b, a = butter_lowpass(cutoff, fs, order=order)
+    y = lfilter(b, a, data)
+    return y
+
+
+def calculate_std_orig_vs_filtered(df):
+    """
+    For each video_id, person, and body part, calculate standard deviation between orginal 
+    data and low-pass filtered data
+
+    Return dictionary of video_id, std, person, and body part
+    """
+    data_deviation = []
+    for (idx, person, part), df_person in tqdm_notebook(df.groupby(['id', 'person', 'part'])):
+        if len(df_person) > 100:
+            try:
+                data = df_person[(df_person.x > 0)].x.values.reshape(-1, 1)
+                data_normalized = preprocessing.StandardScaler().fit_transform(data).ravel()
+                data_filtered = butter_lowpass_filter(data_normalized,
+                                                    cutoff=1, fs=30, order=6)
+                std = np.std(data_normalized - data_filtered)
+                data_deviation.append({
+                    'id': idx,
+                    'std_signal': std,
+                    'person': person,
+                    'part': part
+                })
+            except:
+                pass
+    return data_deviation
