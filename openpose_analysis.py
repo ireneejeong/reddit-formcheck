@@ -4,12 +4,15 @@ import yaml
 import numpy as np
 import pandas as pd
 from glob import glob
-from sklearn import preprocessing
-from scipy.optimize import curve_fit
-from bayes_opt import BayesianOptimization
-from scipy.signal import butter, lfilter, freqz
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import normalize
+
+from scipy.optimize import curve_fit
+from scipy.spatial.distance import euclidean
+from scipy.signal import butter, lfilter, freqz
+
+from sklearn.preprocessing import normalize, StandardScaler
+from bayes_opt import BayesianOptimization
+from fastdtw import fastdtw
 
 
 def read_yaml_file(path):
@@ -143,8 +146,8 @@ def calculate_std_orig_vs_filtered(df):
     for (idx, person, part), df_person in tqdm_notebook(df.groupby(['id', 'person', 'part'])):
         if len(df_person) > 100:
             try:
-                data = df_person[(df_person.x > 0)].x.values.reshape(-1, 1)
-                data_normalized = preprocessing.StandardScaler().fit_transform(data).ravel()
+                data = df_person[(df_person.x > 0) & (df_person.y > 0)].x.values.reshape(-1, 1)
+                data_normalized = StandardScaler().fit_transform(data).ravel()
                 data_filtered = butter_lowpass_filter(data_normalized,
                                                     cutoff=1, fs=30, order=6)
                 std = np.std(data_normalized - data_filtered)
@@ -157,3 +160,46 @@ def calculate_std_orig_vs_filtered(df):
             except:
                 pass
     return data_deviation
+
+
+def align_orig_vs_filtered(df, part=3, col='y'):
+    """
+    Calculate Dynamic Time Warping (DTW) between 
+    original data column ('x' or 'y') and filtered one
+    """
+    data = df[(df.x > 0) & (df.y > 0) & (df.part == part)][col].values.reshape(-1, 1)
+    data_normalized = StandardScaler().fit_transform(data).ravel()
+    data_filtered = butter_lowpass_filter(data_normalized,
+                                          cutoff=1, fs=30, order=6)
+
+    distance, path = fastdtw(data_normalized, data_filtered, dist=euclidean)
+
+    # align back to a given ``path```
+    data_normalized_align = np.vstack([data_normalized[i] for (i, j) in path]).ravel()
+    data_filtered_align = np.vstack([data_filtered[j] for (i, j) in path]).ravel()
+    std = np.std(data_normalized_align - data_filtered_align)
+    std_unaligned = np.std(data_normalized - data_filtered)
+
+    return {
+        'original_data_align': data_normalized_align,
+        'filtered_data_align': data_filtered_align,
+        'dtw_distance': distance,
+        'std_aligned': std,
+        'std_unaligned': std_unaligned
+    }
+
+
+def calculate_dtw_orig_vs_filtered(df):
+    """
+    Distance between orginal data and low-pass filtered data from DTW
+    """
+    data_deviation_dtw = []
+    for (idx, person), df_person in tqdm_notebook(df.groupby(['id', 'person'])):
+        try:
+            d = calculate_dtw_orig_vs_filtered(df_person)
+            d['id'] = idx
+            d['person'] = person
+            data_deviation_dtw.append(d)
+        except:
+            pass
+    return data_deviation_dtw
